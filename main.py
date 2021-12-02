@@ -1,22 +1,12 @@
-import discord
-from typing import TYPE_CHECKING
-from discord import Message
 from discord import Member
-from discord import Permissions
 from discord.ext import commands
-from discord.ext.commands import MemberConverter, MessageNotFound, Greedy, has_permissions
-from typing import TextIO, List, Optional, Coroutine
+from discord.ext.commands import MemberConverter
+from typing import Optional, Coroutine
 from fileIO import *
-from discord.ext import tasks
 import asyncio
-from asyncio import Task
-import time
 
+from localInterface import appendToFile, load_denylist, load_linklist
 
-whitelist_file = "whitelist.txt"
-discordmclinklist_file = "discordmclinklist.txt"
-denylist_file = "denyuserid.txt"
-requestlist_file = "requests.txt"
 selfWhiteList: bool = False
 threadTimerActive: bool = False
 timer: Coroutine = None
@@ -104,12 +94,18 @@ async def unlink(ctx: commands.Context, *arg: Optional[MemberConverter]):
         line = removeFromUIDNameListByUserID(discordmclinklist_file, user_id)
         mcName = line.split(" ")[1]
 
-        removeFromNameList(whitelist_file, mcName)
-
-        await ctx.reply("Your account has been unlinked from the server and"
-                        "you have been removed from the whitelist, you may"
-                        "request access at another point",
-                        mention_author=True)
+        if enableWhitelistRemove:
+            removeFromNameList(whitelist_file, mcName)
+            await ctx.reply("Your account has been unlinked from the server and"
+                            "you have been removed from the whitelist, you may"
+                            "request access at another point",
+                            mention_author=True)
+        else:
+            await ctx.reply("Your account has been unlinked from the server."
+                            "Contact the server owner to be removed from the"
+                            "whitelist, after which you may request access"
+                            "at another point",
+                            mention_author=True)
         return
 
     elif ctx.author.guild_permissions.manage_messages.flag:
@@ -117,11 +113,17 @@ async def unlink(ctx: commands.Context, *arg: Optional[MemberConverter]):
             user: Member = arg
             line = removeFromUIDNameListByUserID(discordmclinklist_file, user.id)
             mcName = line.split(" ")[1]
-            removeFromNameList(whitelist_file, mcName)
 
-            await ctx.reply("This account has been unlinked from the server and"
-                            "removed from the whitelist",
-                            mention_author=True)
+            if enableWhitelistRemove:
+                removeFromNameList(whitelist_file, mcName)
+                await ctx.reply("This account has been unlinked from the server and"
+                                "removed from the whitelist",
+                                mention_author=True)
+            else:
+                await ctx.reply("This account has been unlinked from the server."
+                                "Contact the server owner to remove this user from"
+                                "the whitelist",
+                                mention_author=True)
     else:
         await ctx.reply("You are only allowed to use this command as an"
                         "empty message", mention_author=True, delete_after=20)
@@ -165,14 +167,17 @@ async def overrideadd(ctx: commands.Context, name: str):
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def banFromWhitelist(ctx: commands.Context, mcname):
-    removeFromNameList(whitelist_file, mcname)
-    removeFromUIDNameListByMCName(discordmclinklist_file, mcname)
-
-    await ctx.reply("That user has been removed from the whitelist and had"
+    if enableWhitelistRemove:
+        removeFromNameList(whitelist_file, mcname)
+        removeFromUIDNameListByMCName(discordmclinklist_file, mcname)
+        await ctx.reply("That user has been removed from the whitelist and had"
                     "their account unlinked, if you meant to prevent whitelist"
                     "requests, use addtodenylist command", mention_author=True,
-                    delete_after=30)
-    pass
+                        delete_after=30)
+    else:
+        await ctx.reply("This command is disabled by the server owner",
+                        mention_author=True, delete_after=20)
+    return
 
 
 @bot.command()
@@ -190,10 +195,10 @@ async def toggleSelfWhitelist(ctx: commands.Context, duration: str):
                            + hours +
                            " hours or until turned off manually",
                            mention_author=True)
-            asyncio.run(turnOffThreaded(hours))
+            asyncio.run(turnOffSelfWhitelistThreaded(hours))
 
 
-async def turnOffThreaded(duration: float):
+async def turnOffSelfWhitelistThreaded(duration: float):
     hours = duration * 60 * 60
     await asyncio.wait_for(asyncio.Condition().wait_for(not threadTimerActive), hours)
     super.selfWhiteList = False
