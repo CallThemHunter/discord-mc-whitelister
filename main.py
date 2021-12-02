@@ -4,27 +4,34 @@ from discord import Message
 from discord import Member
 from discord import Permissions
 from discord.ext import commands
-from discord.ext.commands import (
-    MemberConverter, MessageNotFound, Greedy
-)
-from typing import TextIO, List, Optional
+from discord.ext.commands import MemberConverter, MessageNotFound, Greedy, has_permissions
+from typing import TextIO, List, Optional, Coroutine
+from fileIO import *
+from discord.ext import tasks
+import asyncio
+from asyncio import Task
+import time
+
 
 whitelist_file = "whitelist.txt"
 discordmclinklist_file = "discordmclinklist.txt"
 denylist_file = "denyuserid.txt"
 requestlist_file = "requests.txt"
+selfWhiteList: bool = False
+threadTimerActive: bool = False
+timer: Coroutine = None
+
 
 bot: commands.Bot = commands.Bot(command_prefix='malfbot')
-selfWhiteList: bool = False
 
 
 @bot.command()
-async def request(ctx: commands.Context, mcName: str):
+async def request(ctx: commands.Context, mc_name: str):
     deny_list = load_denylist()
     if str(ctx.author.id) in deny_list:
         await ctx.reply("You have been barred from requesting access,"
                         "contact a mod if you believe this was an error",
-                        mention_author=True)
+                        mention_author=True, delete_after=20)
         return
 
     link_list = load_linklist()
@@ -37,7 +44,7 @@ async def request(ctx: commands.Context, mcName: str):
         return
 
     if selfWhiteList:
-        appendToFile(whitelist_file, mcName)
+        appendToFile(whitelist_file, mc_name)
         await ctx.reply("You have been added to the whitelist. please"
                         "allow a few minutes for the whitelist to reload",
                         mention_author=True)
@@ -45,7 +52,7 @@ async def request(ctx: commands.Context, mcName: str):
 
     # TODO add reacts
 
-    line = str(ctx.author.id) + " " + mcName
+    line = str(ctx.author.id) + " " + mc_name
     appendToFile(requestlist_file, line)
     await ctx.reply("You have been added to the requests list, you will"
                     "be screened by a mod shortly for server access",
@@ -58,7 +65,7 @@ async def request(ctx: commands.Context, mcName: str):
 async def approve(ctx: commands.Context):
     if ctx.message.reference is None or ctx.message.is_system():
         await ctx.reply("You must use this in reply to another user's"
-                        "message", mention_author=True)
+                        "message", mention_author=True, delete_after=20)
         return
 
     message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
@@ -78,7 +85,7 @@ async def approve(ctx: commands.Context):
 async def reject(ctx: commands.Context):
     if ctx.message.reference is None or ctx.message.is_system():
         await ctx.send("You must use this in reply to another user's"
-                       "message", mention_author=True)
+                       "message", mention_author=True, delete_after=20)
         return
 
     message = await ctx.channel.fetch_message(ctx.message.reference.message_id)
@@ -117,120 +124,79 @@ async def unlink(ctx: commands.Context, *arg: Optional[MemberConverter]):
                             mention_author=True)
     else:
         await ctx.reply("You are only allowed to use this command as an"
-                        "empty message", mention_author=True)
+                        "empty message", mention_author=True, delete_after=20)
         return
 
 
 @bot.command()
+@commands.has_permissions(manage_messages=True)
 async def addtodenylist(ctx: commands.Context, arg: str):
     member: Member = MemberConverter().convert(ctx, arg)
-    appendToFile(denylist_file, )
-    pass
+    appendToFile(denylist_file, member.id)
+
+    await ctx.reply("That user was barred from requesting access to the server",
+                    mention_author=True, delete_after=20)
+    return
 
 
 @bot.command()
-async def removefromdenylist(ctx: commands.Context):
-    pass
+@commands.has_permissions(manage_messages=True)
+async def removefromdenylist(ctx: commands.Context, arg: str):
+    member: Member = MemberConverter().convert(ctx, arg)
+    removeFromUIDList(denylist_file, member.id)
+
+    await ctx.reply("That user is now allowed to request access to the server",
+              mention_author=True, delete_after=20)
+    return
 
 
 @bot.command()
-async def overrideadd(ctx: commands.Context):
-    pass
+@commands.has_permissions(manage_messages=True)
+async def overrideadd(ctx: commands.Context, name: str):
+    appendToFile(whitelist_file, name)
+
+    await ctx.reply("That user has been added to the whitelist ONLY, not to"
+                    "the discord link, the only way to remove this user is to"
+                    "use the banfromwhitelist command", mention_author=True,
+                    delete_after=20)
+    return
 
 
 @bot.command()
+@commands.has_permissions(manage_messages=True)
 async def banFromWhitelist(ctx: commands.Context, mcname):
+    removeFromNameList(whitelist_file, mcname)
+    removeFromUIDNameListByMCName(discordmclinklist_file, mcname)
+
+    await ctx.reply("That user has been removed from the whitelist and had"
+                    "their account unlinked, if you meant to prevent whitelist"
+                    "requests, use addtodenylist command", mention_author=True,
+                    delete_after=30)
     pass
 
 
 @bot.command()
-async def toggleSelfWhitelist(ctx: commands.Context):
-    pass
+@commands.has_permissions(manage_messages=True)
+async def toggleSelfWhitelist(ctx: commands.Context, duration: str):
+    hours = float(duration)
+    super.selfWhiteList = not selfWhiteList
+
+    if selfWhiteList:
+        if super.threadTimerActive:
+            super.threadTimerActive = False
+        else:
+            super.threadTimerActive = True
+            await ctx.send("Self whitelisting has been turned on for "
+                           + hours +
+                           " hours or until turned off manually",
+                           mention_author=True)
+            asyncio.run(turnOffThreaded(hours))
 
 
-def appendToFile(filename: str, string: str):
-    with open(filename, "a") as f:
-        f.write("\n" + string)
+async def turnOffThreaded(duration: float):
+    hours = duration * 60 * 60
+    await asyncio.wait_for(asyncio.Condition().wait_for(not threadTimerActive), hours)
+    super.selfWhiteList = False
+    return
 
 
-def appendExceptTrue(filename, lines, lines_bool):
-    ret = ""
-    while lines_bool.count(True) != 0:
-        idx = lines_bool.index(True)
-        ret = lines.pop(idx)
-        lines_bool.pop(idx)
-    with open(filename, "a") as f:
-        for line in lines:
-            f.write("\n" + line)
-
-    return ret
-
-
-# for link and requestlist
-def removeFromUIDNameListByUserID(filename: str, userID: int):
-    with open(filename, "r") as f:
-        lines: List[str] = f.readlines()
-    lines_split: List[List[str]] = list(map(lambda line: line.split(" "), lines))
-
-    lines_bool: List[bool] = list(map(lambda line_list: line_list[0] == str(userID), lines_split))
-
-    return appendExceptTrue(filename, lines, lines_bool)
-
-
-# for link and request list
-def removeFromUIDNameListByMCName(filename: str, mcName: str):
-    with open(filename, "r") as f:
-        lines: List[str] = f.readlines()
-    lines_split: List[List[str]] = list(map(lambda line: line.split(" "), lines))
-
-    lines_bool: List[bool] = list(map(lambda line_list: line_list[1] == mcName, lines_split))
-
-    return appendExceptTrue(filename, lines, lines_bool)
-
-
-# for whitelist
-def removeFromNameList(filename: str, mcName: str):
-    with open(filename, "r") as f:
-        lines: List[str] = f.readlines()
-
-    lines_bool: List[bool] = list(map(lambda line: line == mcName, lines))
-
-    return appendExceptTrue(filename, lines, lines_bool)
-
-
-# for deny list
-def removeFromUIDList(filename: str, userID: int):
-    with open(filename, "r") as f:
-        lines: List[str] = f.readlines()
-
-    lines_bool: List[bool] = list(map(lambda line: line == str(userID), lines))
-
-    return appendExceptTrue(filename, lines, lines_bool)
-
-
-def load_denylist() -> List[str]:
-    with open("denylist.txt", "r") as f:
-        deny_list: List[str] = f.readlines()
-    return deny_list
-
-
-def load_requestlist() -> List[List[str]]:
-    with open("requestlist.txt", "r") as f:
-        request_list: List[List[str]] = list(map(
-            lambda line: line.split(" "), f.readlines()
-        ))
-    return request_list
-
-
-def load_whitelist() -> List[str]:
-    with open("whitelist.txt", "r") as f:
-        white_list: List[str] = f.readlines()
-    return white_list
-
-
-def load_linklist() -> List[List[str]]:
-    with open("discordmclink.txt", "r") as f:
-        link_list = list(map(
-            lambda line: line.split(" "), f.readlines()
-        ))
-    return link_list
